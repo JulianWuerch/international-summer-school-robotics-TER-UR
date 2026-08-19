@@ -111,11 +111,20 @@ def main():
         print(f"{JOINT_NAMES[j]:10s} {moved:8.3f}r {gap_rms:8.3f}A {gap_max:8.3f}A "
               f"{pos_err*1e3:7.2f}mrad")
 
+    # if not args.no_plot:
+    #     import matplotlib.pyplot as plt
+    #     rec.plot(args.joint)
+    #     plt.show()
+
     if not args.no_plot:
         import matplotlib.pyplot as plt
         rec.plot(args.joint)
-        plt.show()
 
+        out = f"joint_{args.joint}.png"
+        plt.savefig(out, dpi=300, bbox_inches="tight")
+        print(f"saved plot -> {out}")
+
+        plt.close()
 
 if __name__ == "__main__":
     main()
