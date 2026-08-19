@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import argparse
 
+import matplotlib
+matplotlib.use("Agg")
+
 import numpy as np
 import pandas as pd
 
@@ -72,13 +75,13 @@ class Recording:
         gap = self.current_gap(joint)
         fig, (ax_c, ax_g) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
 
-        ax_c.plot(self.t, self.target_current[:, joint], label="target current", lw=2)
-        ax_c.plot(self.t, self.actual_current[:, joint], label="actual current", lw=1)
+        ax_c.plot(self.t[:2388], self.target_current[:2388, joint], label="target current", lw=2)
+        ax_c.plot(self.t[:2388], self.actual_current[:2388, joint], label="actual current", lw=1)
         ax_c.set_ylabel("current (A)")
         ax_c.set_title(f"{name} joint")
         ax_c.legend(loc="best")
 
-        ax_g.plot(self.t, gap, color="tab:red", lw=1)
+        ax_g.plot(self.t[:2388], gap[:2388], color="tab:red", lw=1)
         ax_g.axhline(0, color="grey", lw=0.8)
         ax_g.set_ylabel("actual - target (A)")
         ax_g.set_xlabel("time (s)")

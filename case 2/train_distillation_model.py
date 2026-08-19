@@ -199,6 +199,76 @@ class LinearModel(DistillModel):
         return self.vel_range, self.acc_range
 
 
+from pysr import PySRRegressor
+
+class SymbolicModel(DistillModel):
+    def __init__(self):
+        self.model = None
+        self.vel_range = None
+        self.acc_range = None
+
+    def fit(self, recordings):
+        X, y = self._design(recordings)
+
+        self.model = PySRRegressor(
+            niterations=1000,
+            binary_operators=[
+                "+", "-", "*", "/"
+            ],
+            unary_operators=[
+                "sin",
+                "cos",
+                "square",
+            ],
+            maxsize=30,
+            model_selection="best",
+            verbosity=1,
+        )
+
+        self.model.fit(X, y)
+
+        self.vel_range = (
+            float(X[:,4].min()),
+            float(X[:,4].max())
+        )
+
+        self.acc_range = (
+            float(X[:,5].min()),
+            float(X[:,5].max())
+        )
+
+        return self
+
+    def predict(self, df):
+        dt = frame_dt(df)
+
+        ti = get_block(df, "target_current")
+        q = get_block(df, "target_q")
+        qd = get_block(df, "target_qd")
+
+        qdd = np.gradient(qd, dt, axis=0)
+
+        vel = df[VEL_COL].to_numpy(dtype=float)
+        acc = df[ACC_COL].to_numpy(dtype=float)
+
+        out = np.zeros_like(q)
+
+        for j in range(N_JOINTS):
+            X = self._row_features(
+                j,
+                ti[:, j],
+                q[:, j],
+                qd[:, j],
+                qdd[:, j],
+                vel,
+                acc,
+            )
+
+            out[:, j] = self.model.predict(X)
+
+        return {"actual_current": out}
+
+
 def augment(model: DistillModel, csv: str, pre: Preprocess = None):
     """Overwrite a recording's actual_* columns with the model's predictions.
 
@@ -233,14 +303,14 @@ def main():
 
     # Import under the real module name (not "__main__") so the saved pickle
     # loads cleanly in train_rla.py and run.py.
-    from train_distillation_model import LinearModel
+    from train_distillation_model import SymbolicModel
     from analysis import Recording
 
     # Preprocess the training data the same way the model will see it later.
     pre = default_preprocess()
     recordings = [Recording(r.path, df=pre.transform_distill(r.df))
                   for r in (Recording(p) for p in args.csvs)]
-    model = LinearModel()
+    model = SymbolicModel()
 
     # Build the row matrix once (same features as fit) to estimate held-out
     # error: predict the measured actual_current on held-out rows.
@@ -256,7 +326,7 @@ def main():
     ss = float(1 - np.sum(err ** 2) / np.sum((y[is_test] - y[is_test].mean()) ** 2))
     print(f"held-out ({is_test.sum()} rows): actual_current RMSE {rmse:.3f} A   R2 {ss:.3f}")
     print("coefficients:")
-    for name, c in zip(LinearModel.FEATURE_NAMES, coef):
+    for name, c in zip(SymbolicModel.FEATURE_NAMES, coef):
         print(f"  {name:12s} {c:+.4f}")
 
     # Refit on everything and save.
