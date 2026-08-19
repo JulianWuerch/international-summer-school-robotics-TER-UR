@@ -45,6 +45,20 @@ class CurrentGapMetric(EvaluationMetric):
         gap = np.abs(get_block(df, "actual_current") - get_block(df, "target_current"))
         return gap.sum(axis=1)
 
+class PositionErrorMetric(EvaluationMetric):
+    """Position-tracking error: ``|actual_q - target_q|`` summed over joints.
+
+    Per-row absolute position error (rad). Aggregating these rows over a move's
+    settle window ``[i1:i2]`` with ``max()`` gives peak overshoot, with RMS gives
+    the RMS position error — the two vibration metrics the case defines.
+    """
+
+    def needs(self) -> list[str]:
+        return ["target_q", "actual_q"]
+
+    def per_row(self, df) -> np.ndarray:
+        err = np.abs(get_block(df, "actual_q") - get_block(df, "target_q"))
+        return err.sum(axis=1)
 
 def add_score(df, metric: EvaluationMetric):
     """Return ``df`` with a ``score`` column from ``metric``.

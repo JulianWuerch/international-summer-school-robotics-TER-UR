@@ -57,21 +57,22 @@ def trapezoidal(distance: float, vel: float, acc: float, dt: float) -> np.ndarra
     together), so ``q(t) = start + s(t) * (dest - start)``.
     """
     if distance <= 1e-9 or vel <= 0 or acc <= 0:
-        return np.array([0.0, 1.0])                  # degenerate: no motion
-    t_acc = vel / acc
-    d_acc = 0.5 * acc * t_acc ** 2
-    if 2 * d_acc >= distance:                        # triangular: never reaches vel
-        t_acc = np.sqrt(distance / acc)
-        d_acc = 0.5 * distance
-        t_flat = 0.0
-    else:
-        t_flat = (distance - 2 * d_acc) / vel
-    total = 2 * t_acc + t_flat
-    t = np.arange(0.0, total + dt, dt)
-    d = np.where(t < t_acc, 0.5 * acc * t ** 2,
+        return np.array([0.0, 1.0]) 
+    else:                 # degenerate: no motion
+        t_acc = vel / acc
+        d_acc = 0.5 * acc * t_acc ** 2
+        if 2 * d_acc >= distance:                        # triangular: never reaches vel
+            t_acc = np.sqrt(distance / acc)
+            d_acc = 0.5 * distance
+            t_flat = 0.0
+        else:
+            t_flat = (distance - 2 * d_acc) / vel
+        total = 2 * t_acc + t_flat
+        t = np.arange(0.0, total + dt, dt)
+        d = np.where(t < t_acc, 0.5 * acc * t ** 2,
                  np.where(t < t_acc + t_flat, d_acc + vel * (t - t_acc),
                           distance - 0.5 * acc * np.clip(total - t, 0, None) ** 2))
-    return np.clip(d, 0.0, distance) / distance
+    return np.clip(d, 0.0, distance) / distance 
 
 
 class Dynamics(ABC):
