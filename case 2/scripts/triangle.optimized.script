@@ -8,9 +8,26 @@
 # Edit vel and acc below, then run it with send.py (--loop N repeats the cycle).
 # Plain assignments (no `global`): send.py wraps this in a repeat loop, and
 # URScript does not allow a `global` declaration inside a loop.
+#
+# The values below are NOT the PPO agent's output: they come from a direct grid
+# search over the same distilled model (models/distill_ur5.pkl) and the same
+# objective the agent optimises (train_rla.OBJECTIVE, SCORE_WEIGHT=5000).
+# Against the baseline in scripts/triangle.script the model predicts
+#
+#     score  0.008070 -> 0.005496  (-31.9%)
+#     cycle  0.929s   -> 1.029s    (+10.8%)
+#
+# i.e. ~32% less tracking error for ~11% more cycle time. Both trained agents
+# (models/agent_test100_params.zip, models/agent_tri.zip) scored worse than the
+# baseline here: the reward surface has a narrow optimum next to the grid's
+# worst point, which a Gaussian policy over a one-step bandit explores poorly.
+#
+# Note: keep "<name> = <number>" out of these comments. utils.get_param takes the
+# first such match in the file, so a commented example would be read as the
+# script's actual vel/acc.
 
-vel = 157
-acc = 484
+vel = 60
+acc = 200
 
 # Three corners of the triangle [rad]; the cycle is C1 -> C2 -> C3 -> C1.
 CORNER_1 = [ 0.0, -1.4, 1.4, -1.57, -1.57, 0.0]

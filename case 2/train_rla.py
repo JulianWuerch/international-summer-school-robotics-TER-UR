@@ -59,12 +59,41 @@ ACC_BOUNDS = (40.0, 600.0)
 # --- objective the optimizer minimizes ---------------------------------------
 # Cost of one move, weighting the metric ``score`` against ``cycle_time`` (move
 # duration, s). The env uses reward = -cost; run.py scores with the same lambda.
-SCORE_WEIGHT = 1.0
+#
+# The two terms are in different units (the position metric is radians, cycle
+# time is seconds) and on very different scales, so equal weights are not a
+# neutral choice: with SCORE_WEIGHT = CYCLE_WEIGHT = 1 the score moves the cost
+# by ~0.0025 while the cycle time moves it by ~6.3, i.e. the score is 0.04% of
+# the objective and the agent simply maximises speed.
+#
+# Equalising the two spreads (cycle spread / score spread ~ 2500) is not enough:
+# at 2500 the fastest setting still wins, because it loses less on score than it
+# gains on cycle time. The choice actually flips between 2500 and 5000, and it
+# flips straight from the fastest corner to the slowest one -- the Pareto front
+# here is convex, so the middle settings are only slightly smoother but much
+# slower and no linear weight ever selects them. 5000 is therefore the smallest
+# weight that buys smoothness at all.
+#
+# Raise SCORE_WEIGHT to favour smoothness, lower it to favour speed; it is a
+# stated preference, not a tuning constant. Re-measure if the metric or the
+# distill model changes, since both change the score's scale.
+SCORE_WEIGHT = 5000.0
 CYCLE_WEIGHT = 1.0
 OBJECTIVE = lambda score, cycle_time: SCORE_WEIGHT * score + CYCLE_WEIGHT * cycle_time
 
 # Path-mode cost. ``max_score`` is the worst per-row score over the path.
-PATH_SCORE_WEIGHT = 1.0
+#
+# Path mode responds to the weight far better than params mode: its optimum
+# moves through intermediate profiles rather than snapping between the extremes,
+# because ``decel_frac`` shapes the approach into the stop independently of how
+# hard the move starts. From ~100 up it selects decel_frac > accel_frac, i.e.
+# accelerate briskly and ease into the stop -- which is what the recorded sweep
+# implies (the ring tracks commanded acceleration, r=+0.33, and is independent
+# of commanded velocity, r=-0.05, so a gentle stop is what buys smoothness).
+#
+# 300 sits in the middle of that usable band: smoother than the speed-first
+# corner, without collapsing to the slowest profile.
+PATH_SCORE_WEIGHT = 300.0
 PATH_CYCLE_WEIGHT = 1.0
 PATH_OBJECTIVE = lambda max_score, cycle_time: \
     PATH_SCORE_WEIGHT * max_score + PATH_CYCLE_WEIGHT * cycle_time
