@@ -94,7 +94,8 @@ class Dynamics(ABC):
         """
 
     def frame(self, q: np.ndarray, dt: float, vel_deg: float, acc_deg: float,
-              s: np.ndarray = None, key=None) -> pd.DataFrame:
+              s: np.ndarray = None, key=None,
+              fill: tuple = ("actual_current",)) -> pd.DataFrame:
         """Assemble a commanded-trajectory DataFrame for a candidate ``q(t)``.
 
         Differentiates ``q`` for ``qd``/``qdd``, asks ``current`` for the commanded
@@ -103,6 +104,13 @@ class Dynamics(ABC):
         is the sample period; ``vel_deg``/``acc_deg`` are stored as the register
         columns (still deg/s). ``s`` is each row's progress along the move geometry
         in [0,1] (how the cached pose terms are looked up).
+
+        ``fill`` names the per-joint ``actual_*`` channel bases to create as zeros.
+        The distill model overwrites them in ``train_rla.evaluate``, so a metric
+        reading a channel the model predicts (e.g. ``actual_q`` for
+        ``PositionErrorMetric``) needs that base listed here. Callers pass the
+        channels their model and metric use; the default keeps the current-only
+        behaviour.
         """
         q = np.asarray(q, dtype=float)
         qd = np.gradient(q, dt, axis=0)
@@ -114,7 +122,9 @@ class Dynamics(ABC):
             out[f"target_q{j}"] = q[:, j]
             out[f"target_qd{j}"] = qd[:, j]
             out[f"target_current{j}"] = cur[:, j]
-            out[f"actual_current{j}"] = 0.0          # distill overwrites these
+        for base in fill:                            # distill overwrites these
+            for col in joint_cols(base):
+                out[col] = np.zeros(n)
         out[VEL_COL] = float(vel_deg)
         out[ACC_COL] = float(acc_deg)
         return pd.DataFrame(out)

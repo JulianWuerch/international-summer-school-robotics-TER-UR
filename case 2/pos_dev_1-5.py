@@ -1,5 +1,5 @@
-"""Peak/RMS position error for single-joint sweep recordings (test-1..5)."""
-#python3 pos_dev_single.py --csvs data/test-4.csv data/test-5.csv
+"""Peak/RMS position error for single-joint sweep recordings (test-1-5)."""
+#python3 pos_dev_1-5.py --csvs data/test-4.csv data/test-5.csv
 
 import argparse
 import numpy as np

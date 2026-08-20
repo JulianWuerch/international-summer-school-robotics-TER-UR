@@ -189,6 +189,20 @@ class _MoveEnv(gym.Env):
         self.pre = pre or Identity()
         self.dyn = dyn or default_dynamics(rec)
         self.adf = self.pre.transform_rla(rec.df)   # recording in the agent's space
+        # The metric reads actual_* channels the model fills in; one it does not
+        # predict would stay at the zeros `Dynamics.frame` creates, and the score
+        # would silently measure the target channel instead of the gap.
+        unmet = [b for b in metric.needs()
+                 if b.startswith("actual_") and b not in model.predicts()]
+        if unmet:
+            raise ValueError(
+                f"metric {type(metric).__name__} needs {unmet}, but the distill "
+                f"model only predicts {model.predicts()}: those columns would stay "
+                f"zero and the score would not measure the gap")
+        # actual_* channels to zero-fill in a candidate frame, for the model to
+        # overwrite: what the model predicts, plus anything else the metric reads.
+        self._fill = tuple(sorted({b for b in (*model.predicts(), *metric.needs())
+                                   if b.startswith("actual_")}))
         self.targets = segments(rec)
         if not self.targets:
             raise ValueError("no target moves: the scripts recorded no joint motion")
@@ -219,7 +233,8 @@ class _MoveEnv(gym.Env):
         commanded frame, and scores it through the model and metric.
         """
         q = self._q_at(move, s)
-        frame = self.dyn.frame(q, dt, vel_deg, acc_deg, s=s, key=move.i0)
+        frame = self.dyn.frame(q, dt, vel_deg, acc_deg, s=s, key=move.i0,
+                               fill=self._fill)
         return evaluate(self.model, self.metric, frame, self.pre)
 
     def reset(self, *, seed=None, options=None):
@@ -321,7 +336,7 @@ class PathEnv(_MoveEnv):
         s = np.linspace(0.0, 1.0, n)
         vel = float(move.vel) if move.vel is not None else 0.0
         acc = float(move.acc) if move.acc is not None else 0.0
-        frame = self.dyn.frame(g, dt, vel, acc, s=s, key=move.i0)
+        frame = self.dyn.frame(g, dt, vel, acc, s=s, key=move.i0, fill=self._fill)
         return float(evaluate(self.model, self.metric, frame, self.pre).max()), n * dt
 
     def _cost(self, move, action) -> tuple[float, float, float]:
