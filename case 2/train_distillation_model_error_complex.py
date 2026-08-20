@@ -3,22 +3,38 @@ Neural-network distillation model.
 
 One CSV row = one training sample.
 
-INPUTS for 6 joints:
+INPUTS:
 
     target_q0 ... target_q5
     target_qd0 ... target_qd5
     target_qdd0 ... target_qdd5
     target_current0 ... target_current5
+    target_moment0 ... target_moment5
+
     vel
     acc
 
-Total input features:
+For 6 joints:
 
-    6 + 6 + 6 + 6 + 1 + 1 = 26
+    target_q       = 6
+    target_qd      = 6
+    target_qdd     = 6
+    target_current = 6
+    target_moment  = 6
+    vel            = 1
+    acc            = 1
+
+Total:
+
+    44 input features
 
 OUTPUTS:
 
-    actual_q0 ... actual_q5
+    error_q0 ... error_q5
+
+where:
+
+    error_q = target_q - actual_q
 
 Total outputs:
 
@@ -26,7 +42,7 @@ Total outputs:
 
 Network:
 
-    26 -> 64 -> 64 -> 64 -> 6
+    44 -> 64 -> 64 -> 64 -> 32 -> 32 -> 32 -> 32 -> 6
 """
 
 from __future__ import annotations
@@ -41,12 +57,12 @@ import torch
 import torch.nn as nn
 
 from preprocess import Identity, Preprocess, default_preprocess
+
 from utils import (
     JOINT_NAMES,
     N_JOINTS,
     VEL_COL,
     ACC_COL,
-    frame_dt,
     get_block,
     set_block,
 )
@@ -92,45 +108,74 @@ class SimpleNN(nn.Module):
     def __init__(
         self,
         n_joints: int,
+        input_size: int,
     ):
         super().__init__()
-
-        # --------------------------------------------------------------
-        # For 6 joints:
-        #
-        # target_q       = 6
-        # target_qd      = 6
-        # target_qdd     = 6
-        # target_current = 6
-        # vel            = 1
-        # acc            = 1
-        #
-        # Total = 26
-        # --------------------------------------------------------------
-
-        input_size = (
-            n_joints * 4 + 2
-        )
-
-        # Predict actual_q for every joint.
 
         output_size = n_joints
 
         self.modell = nn.Sequential(
 
-            nn.Linear(input_size, 64),
+            nn.Linear(
+                input_size,
+                80,
+            ),
 
-            nn.ReLU(),
+            nn.Tanh(),
 
-            nn.Linear(64, 64),
+            nn.Linear(
+                80,
+                80,
+            ),
 
-            nn.ReLU(),
+            nn.Tanh(),
 
-            nn.Linear(64, 64),
+            nn.Linear(
+                80,
+                80,
+            ),
 
-            nn.ReLU(),
+            nn.Tanh(),
 
-            nn.Linear(64, output_size),
+            nn.Linear(
+                80,
+                64,
+            ),
+
+            nn.Tanh(),
+
+            nn.Linear(
+                64,
+                32,
+            ),
+
+            nn.Tanh(),
+
+            nn.Linear(
+                32,
+                32,
+            ),
+
+            nn.Tanh(),
+
+            nn.Linear(
+                32,
+                32,
+            ),
+
+            nn.Tanh(),
+
+            nn.Linear(
+                32,
+                32,
+            ),
+
+            nn.Tanh(),
+
+            nn.Linear(
+                32,
+                output_size,
+            ),
         )
 
     def forward(self, x):
@@ -144,54 +189,72 @@ class SimpleNN(nn.Module):
 
 class OwnModel(DistillModel):
     """
-    Neural network that predicts actual joint positions.
-
-    One row corresponds to one timestep.
+    Neural network that predicts joint position error.
 
     Input:
 
-        target_q[0:6]
-        target_qd[0:6]
-        target_qdd[0:6]
-        target_current[0:6]
+        target_q
+        target_qd
+        target_qdd
+        target_current
+        target_moment
         vel
         acc
 
     Output:
 
-        actual_q[0:6]
+        error_q
+
+    where:
+
+        error_q = target_q - actual_q
     """
+
+    # ------------------------------------------------------------------
+    # Feature names
+    # ------------------------------------------------------------------
 
     FEATURE_NAMES = (
         [
             f"target_q{i}"
             for i in range(N_JOINTS)
         ]
+
         + [
             f"target_qd{i}"
             for i in range(N_JOINTS)
         ]
+
         + [
             f"target_qdd{i}"
             for i in range(N_JOINTS)
         ]
+
         + [
             f"target_current{i}"
             for i in range(N_JOINTS)
         ]
+
+        + [
+            f"target_moment{i}"
+            for i in range(N_JOINTS)
+        ]
+
         + [
             "vel",
             "acc",
         ]
     )
 
+    INPUT_SIZE = len(
+        FEATURE_NAMES
+    )
+
     def __init__(self):
 
-        self.vel_range = None
-        self.acc_range = None
-
         self.modell = SimpleNN(
-            N_JOINTS
+            N_JOINTS,
+            self.INPUT_SIZE,
         )
 
     # ------------------------------------------------------------------
@@ -200,7 +263,9 @@ class OwnModel(DistillModel):
 
     def predicts(self) -> list[str]:
 
-        return ["error_q"]
+        return [
+            "error_q"
+        ]
 
     # ------------------------------------------------------------------
     # Feature construction
@@ -212,24 +277,16 @@ class OwnModel(DistillModel):
         target_qd,
         target_qdd,
         target_current,
+        target_moment,
         vel,
         acc,
     ) -> np.ndarray:
         """
         Build one feature row for every timestep.
 
-        Input shapes:
-
-            target_q       : (n, 6)
-            target_qd      : (n, 6)
-            target_qdd     : (n, 6)
-            target_current : (n, 6)
-            vel            : (n,)
-            acc            : (n,)
-
         Output:
 
-            (n, 26)
+            (n, 44)
         """
 
         target_q = np.asarray(
@@ -249,6 +306,11 @@ class OwnModel(DistillModel):
 
         target_current = np.asarray(
             target_current,
+            dtype=np.float32,
+        )
+
+        target_moment = np.asarray(
+            target_moment,
             dtype=np.float32,
         )
 
@@ -274,6 +336,7 @@ class OwnModel(DistillModel):
                 target_qd,
                 target_qdd,
                 target_current,
+                target_moment,
                 vel,
                 acc,
             ]
@@ -294,15 +357,13 @@ class OwnModel(DistillModel):
         """
         Convert recordings into one large dataset.
 
-        One CSV row = one training sample.
+        X:
 
-        X shape:
+            44 target-side features
 
-            (number_of_rows, 26)
+        y:
 
-        y shape:
-
-            (number_of_rows, 6)
+            6 position errors
         """
 
         X = []
@@ -310,26 +371,8 @@ class OwnModel(DistillModel):
 
         for rec in recordings:
 
-            if rec.vel_cmd is None:
-                raise ValueError(
-                    f"{rec.path} has no vel register; "
-                    "record with "
-                    "`--float-register 1 vel 2 acc`"
-                )
-
-            if rec.acc_cmd is None:
-                raise ValueError(
-                    f"{rec.path} has no acc register; "
-                    "record with "
-                    "`--float-register 1 vel 2 acc`"
-                )
-
             # ----------------------------------------------------------
-            # Use target acceleration directly from the CSV.
-            #
-            # Shape:
-            #
-            #     (number_of_rows, 6)
+            # Get all target-side data.
             # ----------------------------------------------------------
 
             target_qdd = get_block(
@@ -337,8 +380,13 @@ class OwnModel(DistillModel):
                 "target_qdd",
             )
 
+            target_moment = get_block(
+                rec.df,
+                "target_moment",
+            )
+
             # ----------------------------------------------------------
-            # Create ALL-joint input vectors.
+            # Construct input.
             # ----------------------------------------------------------
 
             features = self._row_features(
@@ -346,6 +394,7 @@ class OwnModel(DistillModel):
                 rec.target_qd,
                 target_qdd,
                 rec.target_current,
+                target_moment,
                 rec.vel_cmd,
                 rec.acc_cmd,
             )
@@ -355,44 +404,68 @@ class OwnModel(DistillModel):
             )
 
             # ----------------------------------------------------------
-            # Target is ACTUAL POSITION.
+            # Target:
             #
-            # Shape:
-            #
-            #     (number_of_rows, 6)
+            #     target_q - actual_q
             # ----------------------------------------------------------
 
-            targets = np.asarray(
+            actuals = np.asarray(
                 rec.actual_q,
                 dtype=np.float32,
             )
-            pred = np.asarray(
+
+            targets = np.asarray(
                 rec.target_q,
                 dtype=np.float32,
             )
 
+            error = (
+                targets
+                - actuals
+            )
+
+            # ----------------------------------------------------------
+            # Wrap angular error to [-pi, pi).
+            # ----------------------------------------------------------
+
+            error = (
+                (error + np.pi)
+                % (2.0 * np.pi)
+            ) - np.pi
+
             y.append(
-                pred - targets
+                error
             )
 
         # --------------------------------------------------------------
         # Combine recordings.
         # --------------------------------------------------------------
 
-        X = np.vstack(X)
+        X = np.vstack(
+            X
+        )
 
-        y = np.vstack(y)
+        y = np.vstack(
+            y
+        )
 
         print()
         print(
-            f"Designed dataset:"
+            "Designed dataset:"
         )
+
         print(
             f"  X: {X.shape}"
         )
+
         print(
             f"  y: {y.shape}"
         )
+
+        print(
+            f"  Input features: {X.shape[1]}"
+        )
+
         print()
 
         return X, y
@@ -405,23 +478,17 @@ class OwnModel(DistillModel):
         self,
         recordings,
     ) -> "OwnModel":
-        """
-        Train the neural network.
-
-        One batch contains a number of CSV rows.
-
-        The rows are shuffled before every epoch.
-        """
 
         # --------------------------------------------------------------
         # Training settings
         # --------------------------------------------------------------
 
-        epochs = 500
+        epochs = 200
+
         batch_size = 2048
 
         # --------------------------------------------------------------
-        # Build dataset ONCE.
+        # Build dataset.
         # --------------------------------------------------------------
 
         X, y = self._design(
@@ -433,48 +500,15 @@ class OwnModel(DistillModel):
         # --------------------------------------------------------------
 
         expected_input_size = (
-            N_JOINTS * 4 + 2
+            self.INPUT_SIZE
         )
 
-        if X.shape[1] != expected_input_size:
-
-            raise ValueError(
-                f"Expected "
-                f"{expected_input_size} "
-                f"input features, "
-                f"but got {X.shape[1]}"
-            )
-
-        if y.shape[1] != N_JOINTS:
-
-            raise ValueError(
-                f"Expected "
-                f"{N_JOINTS} output values, "
-                f"but got {y.shape[1]}"
-            )
-
-        # --------------------------------------------------------------
-        # Save velocity/acceleration ranges.
-        #
-        # They are the final two columns.
-        # --------------------------------------------------------------
-
-        self.vel_range = (
-            float(
-                X[:, -2].min()
-            ),
-            float(
-                X[:, -2].max()
-            ),
-        )
-
-        self.acc_range = (
-            float(
-                X[:, -1].min()
-            ),
-            float(
-                X[:, -1].max()
-            ),
+        assert X.shape[1] == expected_input_size, (
+            f"Expected "
+            f"{expected_input_size} "
+            f"input features, "
+            f"got "
+            f"{X.shape[1]}"
         )
 
         # --------------------------------------------------------------
@@ -496,19 +530,12 @@ class OwnModel(DistillModel):
         # --------------------------------------------------------------
 
         self.modell = SimpleNN(
-            N_JOINTS
+            N_JOINTS,
+            self.INPUT_SIZE,
         )
 
         # --------------------------------------------------------------
         # Loss.
-        #
-        # Prediction:
-        #
-        #     (batch, 6)
-        #
-        # Target:
-        #
-        #     (batch, 6)
         # --------------------------------------------------------------
 
         criterion = nn.MSELoss()
@@ -523,7 +550,7 @@ class OwnModel(DistillModel):
         )
 
         # --------------------------------------------------------------
-        # Automatically reduce learning rate when the loss stagnates.
+        # Learning-rate scheduler.
         # --------------------------------------------------------------
 
         scheduler = (
@@ -532,7 +559,7 @@ class OwnModel(DistillModel):
                 mode="min",
                 factor=0.5,
                 patience=5,
-                min_lr=1e-7,
+                min_lr=1e-8,
             )
         )
 
@@ -567,7 +594,7 @@ class OwnModel(DistillModel):
             number_of_batches = 0
 
             # ----------------------------------------------------------
-            # Create batches.
+            # Batches.
             # ----------------------------------------------------------
 
             for batch_start in range(
@@ -601,16 +628,12 @@ class OwnModel(DistillModel):
                 )
 
                 # ------------------------------------------------------
-                # Both are:
-                #
-                #     (batch_size, 6)
-                #
-                # DO NOT unsqueeze y_batch.
+                # Loss.
                 # ------------------------------------------------------
 
                 loss = criterion(
-                    prediction,
-                    y_batch,
+                    prediction * 100,
+                    y_batch * 100,
                 )
 
                 # ------------------------------------------------------
@@ -632,15 +655,15 @@ class OwnModel(DistillModel):
             # ----------------------------------------------------------
 
             average_loss = (
-                total_loss /
-                max(
+                total_loss
+                / max(
                     number_of_batches,
                     1,
                 )
             )
 
             # ----------------------------------------------------------
-            # Adjust learning rate if the loss stagnates.
+            # Learning-rate scheduling.
             # ----------------------------------------------------------
 
             scheduler.step(
@@ -654,12 +677,14 @@ class OwnModel(DistillModel):
 
             print(
                 f"Epoch {epoch:3d} | "
-                f"Loss: {average_loss:.8f} | "
+                f"Loss: {average_loss:.9f} | "
                 f"LR: {current_lr:.8f}"
             )
 
         print()
-        print("DONE")
+        print(
+            "DONE"
+        )
         print()
 
         return self
@@ -673,25 +698,26 @@ class OwnModel(DistillModel):
         df,
     ) -> dict:
         """
-        Predict actual joint positions.
+        Predict joint position errors.
 
-        Input:
+        The model uses all target-side data:
 
-            n rows x 26 features
+            target_q
+            target_qd
+            target_qdd
+            target_current
+            target_moment
+            vel
+            acc
 
         Output:
 
-            n rows x 6 actual positions
+            n rows x 6 predicted errors
         """
 
         # --------------------------------------------------------------
-        # Get all target data.
+        # Get target blocks.
         # --------------------------------------------------------------
-
-        target_current = get_block(
-            df,
-            "target_current",
-        )
 
         target_q = get_block(
             df,
@@ -708,24 +734,34 @@ class OwnModel(DistillModel):
             "target_qdd",
         )
 
+        target_current = get_block(
+            df,
+            "target_current",
+        )
+
+        target_moment = get_block(
+            df,
+            "target_moment",
+        )
+
         # --------------------------------------------------------------
-        # Get velocity and acceleration commands.
+        # Get scalar target commands.
         # --------------------------------------------------------------
 
         vel = df[
             VEL_COL
         ].to_numpy(
-            dtype=float
+            dtype=np.float32
         )
 
         acc = df[
             ACC_COL
         ].to_numpy(
-            dtype=float
+            dtype=np.float32
         )
 
         # --------------------------------------------------------------
-        # Construct exactly the same features used during training.
+        # Construct exactly the same features as training.
         # --------------------------------------------------------------
 
         X = self._row_features(
@@ -733,9 +769,24 @@ class OwnModel(DistillModel):
             target_qd,
             target_qdd,
             target_current,
+            target_moment,
             vel,
             acc,
         )
+
+        # --------------------------------------------------------------
+        # Verify dimensions.
+        # --------------------------------------------------------------
+
+        if X.shape[1] != self.INPUT_SIZE:
+
+            raise ValueError(
+                f"Expected "
+                f"{self.INPUT_SIZE} "
+                f"features, "
+                f"got "
+                f"{X.shape[1]}"
+            )
 
         # --------------------------------------------------------------
         # Convert to tensor.
@@ -767,26 +818,8 @@ class OwnModel(DistillModel):
             .numpy()
         )
 
-        # --------------------------------------------------------------
-        # Verify output shape.
-        # --------------------------------------------------------------
-
-        expected_shape = (
-            len(df),
-            N_JOINTS,
-        )
-
-        if prediction.shape != expected_shape:
-
-            raise RuntimeError(
-                f"Model returned "
-                f"{prediction.shape}, "
-                f"expected "
-                f"{expected_shape}"
-            )
-
         return {
-            "actual_q": prediction
+            "error_q": prediction
         }
 
     # ------------------------------------------------------------------
@@ -795,16 +828,7 @@ class OwnModel(DistillModel):
 
     def bounds(self):
 
-        if self.vel_range is None:
-            return None
-
-        if self.acc_range is None:
-            return None
-
-        return (
-            self.vel_range,
-            self.acc_range,
-        )
+        return None
 
 
 # ============================================================================
@@ -817,13 +841,15 @@ def augment(
     pre: Preprocess = None,
 ):
     """
-    Replace actual_* columns with model predictions.
+    Run the model on a CSV.
 
-    For OwnModel this means:
+    The model predicts:
 
-        actual_q0 ... actual_q5
+        error_q = target_q - actual_q
 
-    are replaced by the predicted values.
+    The prediction is stored in:
+
+        error_q0 ... error_q5
     """
 
     if pre is None:
@@ -891,175 +917,6 @@ def augment(
 
 
 # ============================================================================
-# Holdout evaluation
-# ============================================================================
-
-def evaluate_holdout(
-    model: OwnModel,
-    recordings,
-    holdout: float,
-):
-    """
-    Evaluate the already-trained model.
-
-    IMPORTANT:
-
-    This is only a simple row-based holdout evaluation.
-
-    For a proper robotics evaluation, it is better to hold out complete
-    recordings rather than randomly selected rows because consecutive
-    robot samples are highly correlated.
-    """
-
-    if not (
-        0.0 < holdout < 1.0
-    ):
-        raise ValueError(
-            "holdout must be between 0 and 1"
-        )
-
-    # --------------------------------------------------------------
-    # Build dataset.
-    # --------------------------------------------------------------
-
-    X, y = model._design(
-        recordings
-    )
-
-    # --------------------------------------------------------------
-    # Deterministic row split.
-    # --------------------------------------------------------------
-
-    step = max(
-        int(
-            round(
-                1.0 / holdout
-            )
-        ),
-        2,
-    )
-
-    is_test = (
-        np.arange(
-            len(X)
-        ) % step == 0
-    )
-
-    X_test = X[
-        is_test
-    ]
-
-    y_test = y[
-        is_test
-    ]
-
-    # --------------------------------------------------------------
-    # Predict.
-    # --------------------------------------------------------------
-
-    model.modell.eval()
-
-    X_tensor = torch.tensor(
-        X_test,
-        dtype=torch.float32,
-    )
-
-    with torch.no_grad():
-
-        prediction = (
-            model.modell(
-                X_tensor
-            )
-            .cpu()
-            .numpy()
-        )
-
-    # --------------------------------------------------------------
-    # Error.
-    # --------------------------------------------------------------
-
-    error = (
-        prediction -
-        y_test
-    )
-
-    rmse = float(
-        np.sqrt(
-            np.mean(
-                error ** 2
-            )
-        )
-    )
-
-    denominator = np.sum(
-        (
-            y_test -
-            y_test.mean()
-        ) ** 2
-    )
-
-    if denominator > 0:
-
-        r2 = float(
-            1.0 -
-            np.sum(
-                error ** 2
-            ) /
-            denominator
-        )
-
-    else:
-
-        r2 = float("nan")
-
-    print(
-        f"Held-out rows: "
-        f"{is_test.sum()}"
-    )
-
-    print(
-        f"actual_q RMSE: "
-        f"{rmse:.6f}"
-    )
-
-    print(
-        f"actual_q R2: "
-        f"{r2:.6f}"
-    )
-
-    # --------------------------------------------------------------
-    # Per-joint RMSE.
-    # --------------------------------------------------------------
-
-    print()
-    print(
-        "Per-joint RMSE:"
-    )
-
-    for j in range(
-        N_JOINTS
-    ):
-
-        joint_error = (
-            prediction[:, j] -
-            y_test[:, j]
-        )
-
-        joint_rmse = float(
-            np.sqrt(
-                np.mean(
-                    joint_error ** 2
-                )
-            )
-        )
-
-        print(
-            f"  joint {j}: "
-            f"{joint_rmse:.6f}"
-        )
-
-
-# ============================================================================
 # Main
 # ============================================================================
 
@@ -1069,7 +926,7 @@ def main():
         description=(
             "Train neural-network "
             "distillation model "
-            "for actual joint position."
+            "for joint position error."
         )
     )
 
@@ -1095,16 +952,6 @@ def main():
         ),
         help=(
             "Output pickle file."
-        ),
-    )
-
-    parser.add_argument(
-        "--holdout",
-        type=float,
-        default=0.2,
-        help=(
-            "Fraction of rows used "
-            "for holdout evaluation."
         ),
     )
 
@@ -1147,10 +994,12 @@ def main():
         )
 
     print()
+
     print(
         f"Loaded "
         f"{len(recordings)} recordings"
     )
+
     print()
 
     # --------------------------------------------------------------
@@ -1160,21 +1009,30 @@ def main():
     model = OwnModel()
 
     # --------------------------------------------------------------
+    # Print model input information.
+    # --------------------------------------------------------------
+
+    print(
+        f"Model inputs: "
+        f"{model.INPUT_SIZE}"
+    )
+
+    for i, name in enumerate(
+        model.FEATURE_NAMES
+    ):
+
+        print(
+            f"  {i:2d}: {name}"
+        )
+
+    print()
+
+    # --------------------------------------------------------------
     # Train.
     # --------------------------------------------------------------
 
     model.fit(
         recordings
-    )
-
-    # --------------------------------------------------------------
-    # Evaluate.
-    # --------------------------------------------------------------
-
-    evaluate_holdout(
-        model,
-        recordings,
-        args.holdout,
     )
 
     # --------------------------------------------------------------
@@ -1186,9 +1044,11 @@ def main():
     )
 
     print()
+
     print(
-        f"Saved model to:"
+        "Saved model to:"
     )
+
     print(
         args.out
     )
@@ -1199,4 +1059,5 @@ def main():
 # ============================================================================
 
 if __name__ == "__main__":
+
     main()

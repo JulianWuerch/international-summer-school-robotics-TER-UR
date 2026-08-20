@@ -7,20 +7,18 @@ current gap, position lag), and plot one joint's target vs actual position.
 
 ``--joint`` selects the joint (0=base ... 5=wrist3).
 
-With ``--predict``, the trained position model is used to predict
-actual_q0 ... actual_q5 from:
+With ``--predict``, the trained position-error model is used to predict:
+
+    error_q = target_q - actual_q
+
+using ONLY:
 
     target_q
     target_qd
-    target_qdd
-    target_current
-    vel
-    acc
 
 Example:
 
     python analysis.py --csv data/test-4.csv --joint 1 --predict
-
 """
 
 from __future__ import annotations
@@ -30,8 +28,8 @@ import argparse
 import numpy as np
 import pandas as pd
 
-import train_distillation_model_position
-from train_distillation_model_position import (
+import train_distillation_model_error
+from train_distillation_model_error import (
     DistillModel,
     OwnModel,
     SimpleNN,
@@ -52,20 +50,28 @@ class Recording:
     """One recorded run loaded from a ``record.py`` CSV, as numpy arrays."""
 
     def __init__(self, path: str, df=None):
+
         if df is None:
             df = pd.read_csv(path)
 
         self.path = path
         self.df = df
 
-        self.t = df[TIME_COL].to_numpy(dtype=float)
+        self.t = df[
+            TIME_COL
+        ].to_numpy(
+            dtype=float
+        )
 
         # ---------------------------------------------------------
         # Target joint positions
         # ---------------------------------------------------------
 
         self.target_q = np.column_stack(
-            [df[f"target_q{j}"] for j in range(N_JOINTS)]
+            [
+                df[f"target_q{j}"]
+                for j in range(N_JOINTS)
+            ]
         )
 
         # ---------------------------------------------------------
@@ -73,55 +79,78 @@ class Recording:
         # ---------------------------------------------------------
 
         self.actual_q = np.column_stack(
-            [df[f"actual_q{j}"] for j in range(N_JOINTS)]
+            [
+                df[f"actual_q{j}"]
+                for j in range(N_JOINTS)
+            ]
         )
 
         # ---------------------------------------------------------
         # Target joint velocities
+        #
+        # These are used by the prediction model.
         # ---------------------------------------------------------
 
         self.target_qd = np.column_stack(
-            [df[f"target_qd{j}"] for j in range(N_JOINTS)]
+            [
+                df[f"target_qd{j}"]
+                for j in range(N_JOINTS)
+            ]
         )
 
         # ---------------------------------------------------------
         # Target joint accelerations
         #
-        # These are already present in the CSV and are also used
-        # directly by the position model.
+        # Kept here in case other analysis code uses them.
+        # They are NOT used by the prediction model.
         # ---------------------------------------------------------
 
         self.target_qdd = np.column_stack(
-            [df[f"target_qdd{j}"] for j in range(N_JOINTS)]
+            [
+                df[f"target_qdd{j}"]
+                for j in range(N_JOINTS)
+            ]
         )
 
         # ---------------------------------------------------------
         # Target current
+        #
+        # Kept for current-gap statistics.
+        # It is NOT used by the prediction model.
         # ---------------------------------------------------------
 
         self.target_current = np.column_stack(
-            [df[f"target_current{j}"] for j in range(N_JOINTS)]
+            [
+                df[f"target_current{j}"]
+                for j in range(N_JOINTS)
+            ]
         )
 
         # ---------------------------------------------------------
         # Actual current
         #
-        # Kept because the existing statistics still report
-        # current gap.
+        # Kept because the existing statistics report current gap.
         # ---------------------------------------------------------
 
         self.actual_current = np.column_stack(
-            [df[f"actual_current{j}"] for j in range(N_JOINTS)]
+            [
+                df[f"actual_current{j}"]
+                for j in range(N_JOINTS)
+            ]
         )
 
         self.vel_cmd = (
-            df[VEL_COL].to_numpy(dtype=float)
+            df[VEL_COL].to_numpy(
+                dtype=float
+            )
             if VEL_COL in df
             else None
         )
 
         self.acc_cmd = (
-            df[ACC_COL].to_numpy(dtype=float)
+            df[ACC_COL].to_numpy(
+                dtype=float
+            )
             if ACC_COL in df
             else None
         )
@@ -147,6 +176,7 @@ class Recording:
     @property
     def dt(self) -> float:
         """Median sample period (s)."""
+
         return float(
             np.median(
                 np.diff(self.t)
@@ -158,6 +188,7 @@ class Recording:
         joint: int,
     ) -> np.ndarray:
         """Actual minus target current for one joint (A), per row."""
+
         return (
             self.actual_current[:, joint]
             - self.target_current[:, joint]
@@ -167,21 +198,17 @@ class Recording:
         self,
         joint: int,
     ) -> np.ndarray:
-        """Actual minus target position for one joint (rad), per row."""
-        return (
-            self.actual_q[:, joint]
-            - self.target_q[:, joint]
-        )
+        """
+        Target minus actual position for one joint (rad), per row.
 
-    def predicted_position_error(
-        self,
-        predicted_q: np.ndarray,
-        joint: int,
-    ) -> np.ndarray:
-        """Actual minus predicted position for one joint (rad), per row."""
-        return (
-            self.actual_q[:, joint]
-            - predicted_q[:, joint]
+        This uses the same sign convention as the neural network:
+
+            error = target_q - actual_q
+        """
+
+        return wrapped_angle_error(
+            self.target_q[:, joint],
+            self.actual_q[:, joint],
         )
 
     def plot(
@@ -190,7 +217,12 @@ class Recording:
         predicted_error=None,
     ):
         """
-        Plot target, actual, predicted position and their differences.
+        Plot target/actual position and compare true position error
+        against predicted position error.
+
+        The model predicts:
+
+            target_q - actual_q
         """
 
         import matplotlib.pyplot as plt
@@ -201,19 +233,24 @@ class Recording:
         actual = self.actual_q[:, joint]
 
         # ---------------------------------------------------------
-        # Limit plot to the same first 2388 samples as the
-        # original analysis.
+        # Limit plot to the same 2388-sample window.
         # ---------------------------------------------------------
-        start = 2388
-        end = 2388 * 2
-        n_plot = min(
-            end - start,
+
+        start = 0
+
+        end = min(
+            2388,
             len(self.t),
         )
 
-        t = self.t[start:end]
+        t = self.t[
+            start:end
+        ]
 
-        fig, (ax_q, ax_g) = plt.subplots(
+        fig, (
+            ax_q,
+            ax_g,
+        ) = plt.subplots(
             2,
             1,
             figsize=(9, 6),
@@ -221,7 +258,7 @@ class Recording:
         )
 
         # ---------------------------------------------------------
-        # Upper graph: positions
+        # Upper graph: target vs actual position
         # ---------------------------------------------------------
 
         ax_q.plot(
@@ -238,46 +275,91 @@ class Recording:
             lw=1,
         )
 
+
+        # ---------------------------------------------------------
+        # Reconstruct predicted actual position:
+        #
+        # predicted_error = target - actual
+        #
+        # therefore:
+        #
+        # predicted_actual = target - predicted_error
+        # ---------------------------------------------------------
+
         if predicted_error is not None:
+
+            predicted_position = (
+                target
+                - predicted_error[:, joint]
+            )
+
             ax_q.plot(
                 t,
-                target[start:end] - predicted_error[start:end, joint],
+                predicted_position[start:end],
                 label="predicted position",
                 lw=2,
             )
 
-        ax_q.set_ylabel("position (rad)")
-        ax_q.set_title(f"{name} joint")
-        ax_q.legend(loc="best")
+        ax_q.set_ylabel(
+            "position (rad)"
+        )
+
+        ax_q.set_title(
+            f"{name} joint"
+        )
+
+        ax_q.legend(
+            loc="best"
+        )
 
         # ---------------------------------------------------------
-        # Lower graph: differences
+        # Lower graph: TRUE error vs PREDICTED error
+        #
+        # Both use:
+        #
+        #     target - actual
         # ---------------------------------------------------------
 
-        # Actual - target
-        actual_error = (
-            actual
-            - target
+        true_error = wrapped_angle_error(
+            target,
+            actual,
         )
 
         ax_g.plot(
             t,
-            actual_error[start:end],
-            label="actual - target",
+            true_error[start:end],
+            label="actual error",
             lw=1,
         )
 
-        # Actual - predicted
         if predicted_error is not None:
-            predicted_error_r = (
-                (target - actual)
+
+            ax_g.plot(
+                t,
+                predicted_error[
+                    start:end,
+                    joint
+                ],
+                label="predicted error",
+                lw=2,
+            )
+
+            residual = (
+                true_error
                 - predicted_error[:, joint]
             )
 
             ax_g.plot(
                 t,
-                predicted_error_r[start:end],
-                label="actual - predicted",
+                residual[start:end],
+                label="prediction residual",
+                lw=1,
+            )
+
+            ax_g.plot(
+                t,
+                self.target_current[start:end, joint] / 10000.0,
+                label="target current",
                 lw=1,
             )
 
@@ -287,43 +369,103 @@ class Recording:
             lw=0.8,
         )
 
-        ax_g.set_ylabel("difference (rad)")
-        ax_g.set_xlabel("time (s)")
-        ax_g.legend(loc="best")
+        ax_g.set_ylabel(
+            "error (rad)"
+        )
+
+        ax_g.set_xlabel(
+            "time (s)"
+        )
+
+        ax_g.legend(
+            loc="best"
+        )
 
         fig.tight_layout()
 
         return fig
 
 
-def predict_actual_q(
+# ============================================================================
+# Prediction
+# ============================================================================
+
+def predict_error(
     recording,
     model,
 ):
     """
-    Calculate predicted actual joint positions without modifying
-    the recording.
+    Predict position error.
 
-    Returns:
-        np.ndarray with shape (N, 6)
+    The model uses ONLY:
+
+        target_q
+        target_qd
+
+    and predicts:
+
+        target_q - actual_q
     """
 
     prediction = model.predict(
         recording.df
     )
 
-    predicted_q = prediction[
-        "actual_q"
+    # ---------------------------------------------------------
+    # The updated OwnModel returns "error_q".
+    # ---------------------------------------------------------
+
+    predicted_error = prediction[
+        "error_q"
     ]
 
-    if predicted_q.shape != recording.actual_q.shape:
+    # ---------------------------------------------------------
+    # Verify output shape.
+    # ---------------------------------------------------------
+
+    if predicted_error.shape != recording.actual_q.shape:
+
         raise ValueError(
-            f"Prediction shape {predicted_q.shape} does not match "
-            f"actual_q shape {recording.actual_q.shape}"
+            f"Prediction shape "
+            f"{predicted_error.shape} "
+            f"does not match "
+            f"actual_q shape "
+            f"{recording.actual_q.shape}"
         )
 
-    return predicted_q
+    return predicted_error
 
+
+# ============================================================================
+# Angle error
+# ============================================================================
+
+def wrapped_angle_error(
+    target,
+    actual,
+):
+    """
+    Calculate wrapped position error:
+
+        target - actual
+
+    Result is in [-pi, pi).
+    """
+
+    error = (
+        target
+        - actual
+    )
+
+    return (
+        (error + np.pi)
+        % (2.0 * np.pi)
+    ) - np.pi
+
+
+# ============================================================================
+# Main
+# ============================================================================
 
 def main():
 
@@ -361,7 +503,7 @@ def main():
         action="store_true",
         help=(
             "Calculate and show the "
-            "position-model prediction"
+            "position-error model prediction"
         ),
     )
 
@@ -369,13 +511,14 @@ def main():
         "--model",
         default="models/distill_position.pkl",
         help=(
-            "Path to the trained position model"
+            "Path to the trained position-error model"
         ),
     )
 
     args = ap.parse_args()
 
     if not 0 <= args.joint < N_JOINTS:
+
         ap.error(
             f"--joint must be between "
             f"0 and {N_JOINTS - 1}"
@@ -392,14 +535,24 @@ def main():
     predicted_error = None
 
     if args.predict:
+
         import sys
-        print(args.model)
-        sys.modules["__main__"].OwnModel = OwnModel
+
+        # Required when loading the pickle depending on
+        # how the model was originally serialized.
+        sys.modules[
+            "__main__"
+        ].OwnModel = OwnModel
+
+        sys.modules[
+            "__main__"
+        ].SimpleNN = SimpleNN
+
         model = DistillModel.load(
             args.model
         )
 
-        predicted_error = predict_actual_q(
+        predicted_error = predict_error(
             rec,
             model,
         )
@@ -460,12 +613,12 @@ def main():
         # -----------------------------------------------------
         # Actual position error
         #
-        # actual - target
+        # target - actual
         # -----------------------------------------------------
 
-        position_error = (
-            rec.actual_q[:, j]
-            - rec.target_q[:, j]
+        position_error = wrapped_angle_error(
+            rec.target_q[:, j],
+            rec.actual_q[:, j],
         )
 
         pos_err = float(
@@ -485,47 +638,108 @@ def main():
         )
 
     # ---------------------------------------------------------
-    # Optional model prediction statistics
+    # Model prediction evaluation
     # ---------------------------------------------------------
 
     if predicted_error is not None:
 
         print()
         print(
-            "Position model prediction error:"
+            "Position error prediction:"
+        )
+
+        print(
+            f"{'joint':10s} "
+            f"{'true RMS':>12s} "
+            f"{'pred RMS':>12s} "
+            f"{'res RMS':>12s} "
+            f"{'res max':>12s}"
         )
 
         for j in range(
             N_JOINTS
         ):
 
-            predicted_q= (
-                predicted_error[:, j]
-                + rec.actual_q[:, j]
+            # -------------------------------------------------
+            # True error:
+            #
+            # target - actual
+            # -------------------------------------------------
+
+            true_error = wrapped_angle_error(
+                rec.target_q[:, j],
+                rec.actual_q[:, j],
             )
 
-            prediction_error = (rec.target_q[:, j] - rec.actual_q[:, j]) - predicted_error[:, j]
+            # -------------------------------------------------
+            # Model prediction
+            # -------------------------------------------------
 
-            prediction_rmse = float(
+            pred_error = predicted_error[:, j]
+
+            # -------------------------------------------------
+            # Prediction residual
+            # -------------------------------------------------
+
+            residual = (
+                true_error
+                - pred_error
+            )
+
+            # -------------------------------------------------
+            # RMS of actual error
+            # -------------------------------------------------
+
+            true_rms = float(
                 np.sqrt(
                     np.mean(
-                        prediction_error ** 2
+                        true_error ** 2
                     )
                 )
             )
 
-            prediction_max = float(
+            # -------------------------------------------------
+            # RMS of predicted error
+            # -------------------------------------------------
+
+            pred_rms = float(
+                np.sqrt(
+                    np.mean(
+                        pred_error ** 2
+                    )
+                )
+            )
+
+            # -------------------------------------------------
+            # RMS prediction residual
+            # -------------------------------------------------
+
+            residual_rms = float(
+                np.sqrt(
+                    np.mean(
+                        residual ** 2
+                    )
+                )
+            )
+
+            # -------------------------------------------------
+            # Maximum absolute prediction residual
+            # -------------------------------------------------
+
+            residual_max = float(
                 np.max(
                     np.abs(
-                        prediction_error
+                        residual
                     )
                 )
             )
 
             print(
                 f"{JOINT_NAMES[j]:10s} "
-                f"{prediction_rmse * 1e3:10.3f}mrad "
-                f"{prediction_max * 1e3:10.3f}mrad"
+                f"{true_rms * 1e3:10.3f}mrad "
+                f"{pred_rms * 1e3:10.3f}mrad "
+                f"{residual_rms * 1e3:10.3f}mrad "
+                f"{residual_max * 1e3:10.3f}mrad"
             )
 
     # ---------------------------------------------------------
@@ -535,7 +749,7 @@ def main():
     if not args.no_plot:
 
         import matplotlib.pyplot as plt
-        print(predicted_error.shape)
+
         rec.plot(
             args.joint,
             predicted_error,
