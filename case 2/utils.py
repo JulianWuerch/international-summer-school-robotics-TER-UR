@@ -96,7 +96,17 @@ class UR10e:
 
     `gravity(q)` and `diag(mass_matrix(q))` are cheap per-pose features for the
     gap model.
+
+    The parameter arrays are class attributes, so another arm is a subclass that
+    overrides them (see ``UR5e``); every method reads them through ``self``.
     """
+
+    A = _A
+    D = _D
+    ALPHA = _ALPHA
+    MASS = _MASS
+    COM = _COM
+    INERTIA = _INERTIA
 
     def __init__(self, payload: float = 0.0):
         """Args:
@@ -124,7 +134,8 @@ class UR10e:
         q = np.asarray(q, dtype=float)
         frames = [np.eye(4)]
         for i in range(6):
-            frames.append(frames[-1] @ self._dh(q[i], _A[i], _D[i], _ALPHA[i]))
+            frames.append(frames[-1] @ self._dh(q[i], self.A[i], self.D[i],
+                                                self.ALPHA[i]))
         return frames
 
     def fk(self, q) -> np.ndarray:
@@ -174,10 +185,10 @@ class UR10e:
         terms = []
         for i in range(6):
             R = frames[i + 1][:3, :3]                      # base <- link frame
-            com = frames[i + 1] @ np.append(_COM[i], 1.0)  # COM in base frame
+            com = frames[i + 1] @ np.append(self.COM[i], 1.0)  # COM in base frame
             J = self._point_jacobian(frames, com[:3], up_to=i + 1)
-            I_base = R @ _INERTIA[i] @ R.T
-            terms.append((_MASS[i], J[:3], J[3:], I_base))
+            I_base = R @ self.INERTIA[i] @ R.T
+            terms.append((self.MASS[i], J[:3], J[3:], I_base))
         if self.payload > 0.0:
             J = self._point_jacobian(frames, frames[6][:3, 3], up_to=6)
             terms.append((self.payload, J[:3], J[3:], np.zeros((3, 3))))
@@ -221,6 +232,55 @@ class UR10e:
                     christoffel = 0.5 * (dM[i, k, j] + dM[j, k, i] - dM[k, i, j])
                     c[k] += christoffel * qd[i] * qd[j]
         return c
+
+
+# UR5e parameters, from the same Universal Robots DH/dynamics tables. Same
+# structure as the UR10e above: a shorter, lighter arm (0.85 m reach vs 1.30 m).
+_A5 = np.array([0.0, -0.425, -0.3922, 0.0, 0.0, 0.0])           # link length a [m]
+_D5 = np.array([0.1625, 0.0, 0.0, 0.1333, 0.0997, 0.0996])      # link offset d [m]
+
+_MASS5 = np.array([3.761, 8.058, 2.846, 1.37, 1.3, 0.365])      # link masses [kg]
+
+_COM5 = np.array([
+    [0.000, -0.02561, 0.00193],
+    [0.2125, 0.000, 0.11336],
+    [0.15, 0.000, 0.0265],
+    [0.000, -0.0018, 0.01634],
+    [0.000, 0.0018, 0.01634],
+    [0.000, 0.000, -0.001159],
+])
+
+# Inertia about each link COM, in the link frame [kg m^2]. Diagonal
+# approximation from the published link masses and dimensions: UR does not
+# publish the full UR5e tensors, and the off-diagonal terms are small next to
+# the gravity term that dominates tau here.
+_INERTIA5 = np.array([
+    np.diag([0.0084, 0.0064, 0.0084]),
+    np.diag([0.0078, 0.2100, 0.2100]),
+    np.diag([0.0016, 0.0462, 0.0462]),
+    np.diag([0.0016, 0.0016, 0.0009]),
+    np.diag([0.0016, 0.0016, 0.0009]),
+    np.diag([0.0001, 0.0001, 0.0001]),
+])
+
+
+class UR5e(UR10e):
+    """UR5e kinematics and dynamics: the UR10e model with UR5e parameters.
+
+    Same methods and conventions as ``UR10e``; only the arm constants differ, so
+    ``Dynamics`` and the distill-model features work unchanged.
+
+    Note the inertia tensors are a diagonal approximation (see ``_INERTIA5``);
+    ``gravity(q)`` and the mass-matrix diagonal, which drive ``tau`` here, use the
+    published masses, link lengths and COM offsets.
+    """
+
+    A = _A5
+    D = _D5
+    ALPHA = _ALPHA          # same joint twists as the UR10e
+    MASS = _MASS5
+    COM = _COM5
+    INERTIA = _INERTIA5
 
 
 # --- URScript helpers --------------------------------------------------------

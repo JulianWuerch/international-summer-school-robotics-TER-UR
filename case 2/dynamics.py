@@ -1,10 +1,10 @@
 """Commanded torque and current for a candidate motion, without re-running URSim.
 
 For a move (fixed joint geometry) and a candidate speed profile, produces the
-commanded trajectory (q, qd, qdd) and the commanded joint current, from the UR10e
+commanded trajectory (q, qd, qdd) and the commanded joint current, from the arm's
 inverse dynamics:
 
-    tau     = M(q) qdd + g(q)          (utils.UR10e; Coriolis dropped by default)
+    tau     = M(q) qdd + g(q)          (utils.UR5e; Coriolis dropped by default)
     current = tau / Kt                 (Kt fit from the recording: moment / current)
 
 Units: the ``vel``/``acc`` registers (and the URScript numbers) are deg/s and
@@ -24,8 +24,8 @@ from abc import ABC, abstractmethod
 import numpy as np
 import pandas as pd
 
-from utils import (ACC_COL, N_JOINTS, TIME_COL, VEL_COL, UR10e, get_block,
-                   joint_cols)
+from utils import (ACC_COL, N_JOINTS, TIME_COL, VEL_COL, UR5e, UR10e,
+                   get_block, joint_cols)
 
 DEG2RAD = np.pi / 180.0
 MAX_JOINT_SPEED = np.pi          # rad/s: URScript clamps a movej speed to this
@@ -57,22 +57,21 @@ def trapezoidal(distance: float, vel: float, acc: float, dt: float) -> np.ndarra
     together), so ``q(t) = start + s(t) * (dest - start)``.
     """
     if distance <= 1e-9 or vel <= 0 or acc <= 0:
-        return np.array([0.0, 1.0]) 
-    else:                 # degenerate: no motion
-        t_acc = vel / acc
-        d_acc = 0.5 * acc * t_acc ** 2
-        if 2 * d_acc >= distance:                        # triangular: never reaches vel
-            t_acc = np.sqrt(distance / acc)
-            d_acc = 0.5 * distance
-            t_flat = 0.0
-        else:
-            t_flat = (distance - 2 * d_acc) / vel
-        total = 2 * t_acc + t_flat
-        t = np.arange(0.0, total + dt, dt)
-        d = np.where(t < t_acc, 0.5 * acc * t ** 2,
+        return np.array([0.0, 1.0])                  # degenerate: no motion
+    t_acc = vel / acc
+    d_acc = 0.5 * acc * t_acc ** 2
+    if 2 * d_acc >= distance:                        # triangular: never reaches vel
+        t_acc = np.sqrt(distance / acc)
+        d_acc = 0.5 * distance
+        t_flat = 0.0
+    else:
+        t_flat = (distance - 2 * d_acc) / vel
+    total = 2 * t_acc + t_flat
+    t = np.arange(0.0, total + dt, dt)
+    d = np.where(t < t_acc, 0.5 * acc * t ** 2,
                  np.where(t < t_acc + t_flat, d_acc + vel * (t - t_acc),
                           distance - 0.5 * acc * np.clip(total - t, 0, None) ** 2))
-    return np.clip(d, 0.0, distance) / distance 
+    return np.clip(d, 0.0, distance) / distance
 
 
 class Dynamics(ABC):
@@ -93,17 +92,30 @@ class Dynamics(ABC):
         Both let an implementation reuse pose-dependent terms cached per move.
         """
 
+    def moment(self, current: np.ndarray) -> np.ndarray:
+        """Commanded joint moment for a commanded current, ``(n, N_JOINTS)``.
+
+        The inverse of the ``current = tau / Kt`` an implementation applies, so a
+        candidate frame carries the same ``target_moment`` channel a recording
+        does. The default assumes ``Kt = 1`` (moment and current in the same
+        units); ``UR10eDynamics`` overrides it with the Kt it fit.
+        """
+        return np.asarray(current, dtype=float)
+
     def frame(self, q: np.ndarray, dt: float, vel_deg: float, acc_deg: float,
               s: np.ndarray = None, key=None,
               fill: tuple = ("actual_current",)) -> pd.DataFrame:
         """Assemble a commanded-trajectory DataFrame for a candidate ``q(t)``.
 
         Differentiates ``q`` for ``qd``/``qdd``, asks ``current`` for the commanded
-        current, and lays it out with the same columns a URSim recording has (the
-        ``actual_*`` columns are zeros for the distill model to overwrite). ``dt``
-        is the sample period; ``vel_deg``/``acc_deg`` are stored as the register
-        columns (still deg/s). ``s`` is each row's progress along the move geometry
-        in [0,1] (how the cached pose terms are looked up).
+        current and ``moment`` for the matching torque, and lays it out with the
+        same columns a URSim recording has (the ``actual_*`` columns are zeros for
+        the distill model to overwrite). The commanded channels are ``target_q``,
+        ``target_qd``, ``target_qdd``, ``target_current`` and ``target_moment``, so
+        a distill model can read the same inputs it trained on. ``dt`` is the
+        sample period; ``vel_deg``/``acc_deg`` are stored as the register columns
+        (still deg/s). ``s`` is each row's progress along the move geometry in
+        [0,1] (how the cached pose terms are looked up).
 
         ``fill`` names the per-joint ``actual_*`` channel bases to create as zeros.
         The distill model overwrites them in ``train_rla.evaluate``, so a metric
@@ -116,12 +128,15 @@ class Dynamics(ABC):
         qd = np.gradient(q, dt, axis=0)
         qdd = np.gradient(qd, dt, axis=0)
         cur = self.current(q, qd, qdd, s=s, key=key)
+        mom = self.moment(cur)
         n = len(q)
         out = {TIME_COL: np.arange(n) * dt}
         for j in range(N_JOINTS):
             out[f"target_q{j}"] = q[:, j]
             out[f"target_qd{j}"] = qd[:, j]
+            out[f"target_qdd{j}"] = qdd[:, j]
             out[f"target_current{j}"] = cur[:, j]
+            out[f"target_moment{j}"] = mom[:, j]
         for base in fill:                            # distill overwrites these
             for col in joint_cols(base):
                 out[col] = np.zeros(n)
@@ -137,10 +152,15 @@ class UR10eDynamics(Dynamics):
     a grid along each move's geometry (they do not depend on the speed profile) and
     interpolated per candidate. Coriolis is dropped (small here, and its finite
     difference is expensive); add it in a subclass if you need it.
+
+    ``ROBOT`` is the arm the torque model uses; override it for another arm (see
+    ``UR5eDynamics``).
     """
 
+    ROBOT = UR10e
+
     def __init__(self, rec, payload: float = 0.0, grid: int = GRID):
-        self.ur = UR10e(payload=payload)
+        self.ur = self.ROBOT(payload=payload)
         self.kt = fit_kt(rec)
         self.grid = grid
         self._cache = {}          # key -> (s_grid, M_grid, g_grid)
@@ -178,7 +198,17 @@ class UR10eDynamics(Dynamics):
         tau = np.einsum("nij,nj->ni", M, qdd) + g
         return tau / self.kt
 
+    def moment(self, current: np.ndarray) -> np.ndarray:
+        """Undo ``current = tau / Kt`` with the Kt fit from the recording."""
+        return np.asarray(current, dtype=float) * self.kt
+
+
+class UR5eDynamics(UR10eDynamics):
+    """The same torque model on a UR5e (``utils.UR5e`` parameters)."""
+
+    ROBOT = UR5e
+
 
 def default_dynamics(rec) -> Dynamics:
     """The dynamics model the pipeline uses. Swap the return to change it globally."""
-    return UR10eDynamics(rec)
+    return UR5eDynamics(rec)

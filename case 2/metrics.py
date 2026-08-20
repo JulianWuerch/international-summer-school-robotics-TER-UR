@@ -60,6 +60,53 @@ class PositionErrorMetric(EvaluationMetric):
         err = np.abs(get_block(df, "actual_q") - get_block(df, "target_q"))
         return err.sum(axis=1)
 
+
+class ErrorQMetric(EvaluationMetric):
+    """Position-tracking error read straight from a predicted ``error_q`` channel.
+
+    Same quantity as ``PositionErrorMetric``, but for distill models that predict
+    the tracking error directly instead of the reached position. The distilled NNs
+    (``train_distillation_model_error*.py``) are trained on
+
+        error_q = target_q - actual_q
+
+    so the per-row score is ``|error_q|`` summed over joints, with no conversion
+    to ``actual_q`` and back. Taking the absolute value makes the sign convention
+    irrelevant: a model trained on ``actual_q - target_q`` scores identically.
+
+    Use this when ``model.predicts()`` contains ``error_q``; use
+    ``PositionErrorMetric`` when it contains ``actual_q``.
+    """
+
+    def needs(self) -> list[str]:
+        return ["error_q"]
+
+    def per_row(self, df) -> np.ndarray:
+        return np.abs(get_block(df, "error_q")).sum(axis=1)
+
+
+def default_metric(model) -> EvaluationMetric:
+    """The metric that reads what ``model`` predicts.
+
+    A distill model and a metric have to agree on a channel: the model fills the
+    ``actual_*``/``error_*`` columns the metric then scores. Pick the metric from
+    the model's own ``predicts()`` so swapping the model does not silently leave a
+    mismatched metric behind (``_MoveEnv`` raises on that).
+
+        error_q         -> ErrorQMetric        (the distilled NNs)
+        actual_q        -> PositionErrorMetric
+        actual_current  -> CurrentGapMetric    (LinearModel, the baseline)
+    """
+    predicts = model.predicts()
+    for base, metric in (("error_q", ErrorQMetric),
+                         ("actual_q", PositionErrorMetric),
+                         ("actual_current", CurrentGapMetric)):
+        if base in predicts:
+            return metric()
+    raise ValueError(f"no metric reads any of {predicts}; add one to metrics.py "
+                     f"and pick it here")
+
+
 def add_score(df, metric: EvaluationMetric):
     """Return ``df`` with a ``score`` column from ``metric``.
 

@@ -24,7 +24,7 @@ import re
 import numpy as np
 from stable_baselines3 import PPO
 
-from metrics import CurrentGapMetric
+from metrics import default_metric
 from preprocess import default_preprocess
 from train_distillation_model import DistillModel
 from train_rla import GapEnv, PathEnv, build_dataset, speed_profile
@@ -158,7 +158,8 @@ def main():
     args.agent = args.agent or f"models/agent_{args.mode}.zip"
 
     model = DistillModel.load(args.model)
-    metric = CurrentGapMetric()
+    metric = default_metric(model)
+    print(f"model predicts {model.predicts()} -> {type(metric).__name__}")
     pre = default_preprocess()
     # Dataset written to the root, named after the script (e.g. triangle.sim_to_real.csv).
     out = re.sub(r"\.script$", ".sim_to_real.csv", os.path.basename(args.script))

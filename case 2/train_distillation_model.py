@@ -44,6 +44,30 @@ from utils import (JOINT_NAMES, N_JOINTS, VEL_COL, ACC_COL, frame_dt,
                    get_block, set_block)
 
 
+# The distilled NN trainers run as scripts, so a model pickled by one records its
+# class as ``__main__.OwnModel`` (and its nested ``nn.Module`` as
+# ``__main__.SimpleNN``). Loading it from another process then fails, because that
+# process's __main__ has no such attribute. Resolve those names against the
+# trainer module instead, so an already-trained pickle loads without re-saving.
+_NN_TRAINER = "train_distillation_model_error_complex"
+
+
+class _MainAliasUnpickler(pickle.Unpickler):
+    """Resolve ``__main__.X`` against the trainer module that defines ``X``."""
+
+    def find_class(self, module, name):
+        if module == "__main__":
+            import importlib
+            try:
+                mod = importlib.import_module(_NN_TRAINER)
+            except ImportError:
+                pass
+            else:
+                if hasattr(mod, name):
+                    return getattr(mod, name)
+        return super().find_class(module, name)
+
+
 class DistillModel(ABC):
     """Interface every distilled model must implement.
 
@@ -87,7 +111,11 @@ class DistillModel(ABC):
     @staticmethod
     def load(path: str) -> "DistillModel":
         with open(path, "rb") as f:
-            return pickle.load(f)
+            try:
+                return pickle.load(f)
+            except AttributeError:
+                f.seek(0)
+                return _MainAliasUnpickler(f).load()
 
 
 class LinearModel(DistillModel):

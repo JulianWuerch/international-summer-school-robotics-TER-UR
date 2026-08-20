@@ -42,9 +42,11 @@ from common import segments
 from dynamics import (DEG2RAD, GRID, MAX_JOINT_ACC, MAX_JOINT_SPEED, Dynamics,
                       default_dynamics, trapezoidal)
 from train_distillation_model import DistillModel, augment
-from metrics import CurrentGapMetric, EvaluationMetric, SCORE_COL, add_score
+from metrics import (CurrentGapMetric, EvaluationMetric, SCORE_COL, add_score,
+                     default_metric)
 from preprocess import Identity, Preprocess, default_preprocess
-from utils import ACC_COL, N_JOINTS, SCRIPT_COL, VEL_COL, get_block, set_block
+from utils import (ACC_COL, N_JOINTS, SCRIPT_COL, VEL_COL, get_block, joint_cols,
+                   set_block)
 
 # Training-data file (sim targets + predicted actuals + score label).
 SIM_TO_REAL = "sim_to_real.csv"
@@ -98,11 +100,18 @@ def observe(move, table, model: DistillModel) -> np.ndarray:
     ``model.predicts()`` channel (six joints each) and the baseline ``score``, all
     aggregated over the move window. ``table`` is the recording in the agent's
     space (``pre.transform_rla`` already applied).
+
+    A model may predict a derived channel the recording does not carry (the
+    distilled NNs predict ``error_q``, which only exists on a candidate frame);
+    those are skipped, so the observation holds the baselines actually recorded.
+    The set skipped is the same for every move, so the vector stays a fixed width.
     """
     df = table.iloc[move.i0:move.i2]
     onehot = [1.0 if i == move.joint else 0.0 for i in range(N_JOINTS)]
     feats = [move.start, move.dest, move.dist, *onehot]
     for base in model.predicts():
+        if not all(c in df.columns for c in joint_cols(base)):
+            continue
         feats += list(_aggregate(get_block(df, base)))
     feats.append(float(_aggregate(df[SCORE_COL].to_numpy())))
     return np.array(feats, dtype=np.float32)
@@ -387,7 +396,8 @@ def main():
     out = args.out or f"models/agent_{args.mode}.zip"
 
     model = DistillModel.load(args.model)
-    metric = CurrentGapMetric()
+    metric = default_metric(model)
+    print(f"model predicts {model.predicts()} -> {type(metric).__name__}")
     pre = default_preprocess()
     rec = build_dataset(model, metric, args.scripts, args.robot_ip, args.loop, pre)
     dyn = default_dynamics(rec)
