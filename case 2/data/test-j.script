@@ -1,0 +1,165 @@
+# Smooth joint-space move using a quintic S-curve.
+#
+# q : target joint positions [rad]
+# a : maximum joint acceleration [rad/s^2]
+# v : maximum joint velocity [rad/s]
+# t : requested move time [s]
+# r : blend radius (currently not implemented)
+#
+# The geometric path is:
+#     q(t) = q_start + s(t) * (q_target - q_start)
+#
+# where s(t) is a quintic S-curve:
+#     s = 10*x^3 - 15*x^4 + 6*x^5
+#
+# This gives:
+#     velocity = 0 at start/end
+#     acceleration = 0 at start/end
+#
+def movej_scurve(q, a=1.4, v=1.05, t=0.0, r=0.0):
+
+    q0 = get_actual_joint_positions()
+
+    # Find the largest joint displacement
+    max_dist = 0.0
+
+    i = 0
+    while i < 6:
+        d = q[i] - q0[i]
+        if d < 0:
+            d = -d
+        end
+        if d > max_dist:
+            max_dist = d
+        end
+        i = i + 1
+    end
+
+    # Nothing to do
+    if max_dist < 0.000001:
+        return None
+    end
+
+    # ---------------------------------------------------------
+    # Determine motion duration.
+    #
+    # For:
+    #   s(x) = 10x^3 - 15x^4 + 6x^5
+    #
+    # maximum ds/dx = 1.875
+    # maximum d2s/dx2 = 5.7735
+    #
+    # Therefore:
+    #
+    #   vmax = 1.875 * distance / T
+    #   amax = 5.7735 * distance / T^2
+    # ---------------------------------------------------------
+
+    if v > 0.0:
+        t_v = 1.875 * max_dist / v
+    else:
+        t_v = 0.0
+    end
+
+    if a > 0.0:
+        t_a = sqrt(5.7735 * max_dist / a)
+    else:
+        t_a = 0.0
+    end
+
+    # Required duration based on velocity and acceleration
+    move_time = t_v
+    if t_a > t_v:
+        move_time = t_a
+    end
+
+    # If the user explicitly specifies a time, use at least
+    # that much time.
+    if t > move_time:
+        move_time = t
+    end
+
+    # Minimum duration to avoid an excessively fast loop
+    if move_time < 0.1:
+        move_time = 0.1
+    end
+
+    # ---------------------------------------------------------
+    # Execute the trajectory
+    # ---------------------------------------------------------
+
+    dt = 0.008
+    elapsed = 0.0
+    while elapsed < move_time:
+
+        x = elapsed / move_time
+
+        if x > 1.0:
+            x = 1.0
+        end
+
+        s = 10.0*x*x*x - 15.0*x*x*x*x + 6.0*x*x*x*x*x
+
+        q_cmd = [
+            q0[0] + s * (q[0] - q0[0]),
+            q0[1] + s * (q[1] - q0[1]),
+            q0[2] + s * (q[2] - q0[2]),
+            q0[3] + s * (q[3] - q0[3]),
+            q0[4] + s * (q[4] - q0[4]),
+            q0[5] + s * (q[5] - q0[5])
+        ]
+
+        servoj(q_cmd, t=dt, lookahead_time=0.1, gain=300)
+
+        elapsed = elapsed + dt
+        sync()
+    end
+
+    # Make sure the trajectory itself ends exactly at q
+    servoj(q, t=dt, lookahead_time=0.1, gain=300)
+    sync()
+end
+
+position_0 = [0.0, 0.0, 0.0, -1.57, 0.0, 0.0]
+position_1 = [0.0, -3.14, 0.0, -1.57, 0.0, 0.0]
+
+movej(position_0, v=1.0, a=1.0)
+sleep(0.8)
+movej(position_1, v=1.0, a=1.0)
+sleep(0.8)
+movej(position_0, v=1.0, a=1.0)
+sleep(0.8)
+movej(position_1, v=1.0, a=1.0)
+sleep(0.8)
+movej(position_0, v=1.0, a=1.0)
+sleep(0.8)
+movej(position_1, v=1.0, a=1.0)
+sleep(0.8)
+movej(position_0, v=1.0, a=1.0)
+sleep(0.8)
+optimovej(position_0, v=1.0, a=1.0)
+sleep(0.8)
+optimovej(position_1, v=1.0, a=1.0)
+sleep(0.8)
+optimovej(position_0, v=1.0, a=1.0)
+sleep(0.8)
+optimovej(position_1, v=1.0, a=1.0)
+sleep(0.8)
+optimovej(position_0, v=1.0, a=1.0)
+sleep(0.8)
+optimovej(position_1, v=1.0, a=1.0)
+sleep(0.8)
+optimovej(position_0, v=1.0, a=1.0)
+sleep(0.8)
+optimovej(position_1, v=0.8, a=0.8)
+sleep(0.8)
+optimovej(position_0, v=0.8, a=0.8)
+sleep(0.8)
+optimovej(position_1, v=0.8, a=0.8)
+sleep(0.8)
+optimovej(position_0, v=0.8, a=0.8)
+sleep(0.8)
+optimovej(position_1, v=0.8, a=0.8)
+sleep(0.8)
+optimovej(position_0, v=0.8, a=0.8)
+sleep(0.8)

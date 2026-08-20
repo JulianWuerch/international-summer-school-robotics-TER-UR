@@ -1,0 +1,53 @@
+# Shoulder swing with a two-phase vel/acc sweep, for recording real-robot runs.
+#
+# Joint 1 (shoulder) swings 0 to -180 deg with the arm extended; no other joint
+# moves. The poses are the ones already verified on the robot.
+#
+# The sweep varies one parameter at a time so the recording separates their two
+# effects (sweeping both together confounds them: every run would differ in
+# both, and the model could not tell which caused a change in the error):
+#
+#   loops  1-50   acc fixed at 1.4, vel steps down 1.2 -> 0.122 (step 0.022)
+#   loops 51-100  vel back to 1.2,  acc steps down 1.4 -> 0.126 (step 0.026)
+#
+# vel/acc are the raw movej numbers (rad/s, rad/s^2) and are also written to
+# float registers 1 and 2, so record.py logs what was commanded. Without those
+# writes the vel/acc columns stay 0 and the distill model cannot train.
+#
+# sleep(0.8) after each movej leaves the settle window [i1, i2] where the arm
+# rings down; without it consecutive movejs blend and only tracking lag is
+# captured, not vibration.
+#
+#   python record.py --robot-ip <ip> --out data/real-sweep.csv --float-register 1 vel 2 acc
+# then start this program on the pendant. ~200 moves, roughly 25 min (the slow
+# settings at the end of each phase take the longest).
+
+global vel = 1.2
+global acc = 1.4
+
+global POSE_A = [0.0, 0.0, 0.0, -1.57, 0.0, 0.0]
+global POSE_B = [0.0, -3.14, 0.0, -1.57, 0.0, 0.0]
+
+global Loop = 0
+
+while (Loop < 100):
+  write_output_float_register(1, vel)
+  write_output_float_register(2, acc)
+
+  movej(POSE_A, a=acc, v=vel)
+  sleep(0.8)
+  movej(POSE_B, a=acc, v=vel)
+  sleep(0.8)
+
+  Loop = Loop + 1
+
+  if (Loop < 50):
+    vel = vel - 0.022
+  elif (Loop == 50):
+    vel = 1.2
+  else:
+    acc = acc - 0.026
+  end
+end
+
+halt
