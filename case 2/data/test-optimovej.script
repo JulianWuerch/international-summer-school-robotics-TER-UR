@@ -1,0 +1,30 @@
+# Shoulder swing using optimovej instead of movej.
+#
+# Same poses and same vel/acc as data/test-1-new.script, so the two recordings
+# are directly comparable: only the move command differs.
+#
+# NOTE on the registers: optimovej re-times the move itself, so vel/acc are the
+# requested limits, not what the joint actually does -- a recording of this
+# showed a peak joint speed of 1.472 rad/s while vel read 1.200. The registers
+# still record what was asked for; do not read them as the achieved speed.
+#
+# sleep(0.8) after each move leaves the settle window [i1, i2] where the arm
+# rings down, so common.segments can separate the ring from tracking lag.
+#
+# No loop here: send.py --loop N wraps this and repeats it.
+#   python send.py --robot-ip <ip> --script data/test-optimovej.script --loop 10 \
+#       --out data/real-optimovej.csv --float-register 1 vel 2 acc
+
+vel = 1
+acc = 1
+
+POSE_A = [0.0, 0.0, 0.0, -1.57, 0.0, 0.0]
+POSE_B = [0.0, -3.14, 0.0, -1.57, 0.0, 0.0]
+
+write_output_float_register(1, vel)
+write_output_float_register(2, acc)
+
+optimovej(POSE_A, a=acc, v=vel)
+sleep(0.8)
+optimovej(POSE_B, a=acc, v=vel)
+sleep(0.8)
